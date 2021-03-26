@@ -1,11 +1,14 @@
 import os
 from collections import Counter
+import pickle
+import re
 
 from flask import Flask, jsonify, request
 from flask_cors import CORS
+from nltk import FreqDist
 
-import pickle
-import re
+
+from .helpers import *
 
 app = Flask(__name__)
 app.config['JSON_AS_ASCII'] = False
@@ -16,6 +19,9 @@ with open("womentalk_2019_pair.pickle", "rb") as f:
 
 def query_word_from_side(word, which_side, comment_type=None):
     
+    n_gram_freq_dist_of_utt_containg_keyword = FreqDist()
+    n_gram_freq_dist_of_the_other_utt = FreqDist()
+
     author_counter = Counter()
     
     result = {
@@ -44,39 +50,107 @@ def query_word_from_side(word, which_side, comment_type=None):
     # 如果沒有            
     else:
 
+
+        list_of_turn_position_of_word = list()
+        list_of_sentence_position_of_word = list()
+
+
+        # 選任意一邊出現的
+        if which_side == 'any':
+
+            for pair in corpus:
+
+                if word in pair['comment_content'] or word in pair['recomment_content']:
+                    
+                    if word in pair['comment_content']:
+                        pair['comment_content_position'] = find_substring_indice_in_a_string(pair['comment_content'], word)
+                        list_of_turn_position_of_word.append(pair['comment_content_position'])
+
+                        # 取出關鍵詞在句子中的位置
+                        for _position in get_word_position_in_a_sentence(word, pair['comment_content']):
+                            list_of_sentence_position_of_word.append(_position)
+                        
+
+                        author_counter[pair['comment_user']] += 1
+                    
+                    if word in pair['recomment_content']:
+                        pair['recomment_content_position'] = find_substring_indice_in_a_string(pair['recomment_content'], word)
+                        list_of_turn_position_of_word.append(pair['recomment_content_position'])
+                        
+                        # 取出關鍵詞在句子中的位置
+                        for _position in get_word_position_in_a_sentence(word, pair['recomment_content']):
+                            list_of_sentence_position_of_word.append(_position)
+
+                        author_counter[pair['recomment_user']] += 1
+
+                    result['data'].append(pair)
+                    
+                    
+
         # 選兩邊都出現的
-        if which_side == 'both':
+        elif which_side == 'both':
 
             for pair in corpus:
 
                 if word in pair['comment_content'] and word in pair['recomment_content']:
                     pair['comment_content_position'] = find_substring_indice_in_a_string(pair['comment_content'], word)
                     pair['recomment_content_position'] = find_substring_indice_in_a_string(pair['recomment_content'], word)
+                    
+                    list_of_turn_position_of_word.append(pair['comment_content_position'])
+                    list_of_turn_position_of_word.append(pair['recomment_content_position'])
+                    
+                    # 取出關鍵詞在句子中的位置
+                    for _position in get_word_position_in_a_sentence(word, pair['comment_content']):
+                        list_of_sentence_position_of_word.append(_position)
+                    for _position in get_word_position_in_a_sentence(word, pair['recomment_content']):
+                        list_of_sentence_position_of_word.append(_position)
+
                     result['data'].append(pair)
                     author_counter[pair['comment_user']] += 1
                     author_counter[pair['recomment_user']] += 1
 
+        # 選回文 or 回回文的
         else:
-            position_list = list()
+            
             for pair in corpus:
                 utterance = pair[key[which_side] + '_content']
+                other_side_utterance =  pair['recomment_content'] if key[which_side] == 'comment' else pair['comment_content']
+                
                 if word in utterance:
                     try:
                         word_position = find_substring_indice_in_a_string(utterance, word)
                     except:
                         print(utterance)
-                    position_list.append(word_position)                
+                    list_of_turn_position_of_word.append(word_position) 
+                    
+                    # 取出關鍵詞在句子中的位置
+                    for _position in get_word_position_in_a_sentence(word, utterance):
+                        list_of_sentence_position_of_word.append(_position)
+
                     # pair[key[which_side] + '_content'] += ' || ' + str(word_position)
                     pair[key[which_side] + '_content_position'] = word_position
                     result['data'].append(pair)
                     author_counter[pair[key[which_side] + '_user']] += 1
 
-            result['statistics']['word_position'] = round(sum(position_list) / len(position_list), 2)
+                    # 計算 n-gram
+                    n_gram_freq_dist_of_utt_containg_keyword = generate_n_gram_freq_dist(utterance, n_gram_freq_dist_of_utt_containg_keyword, 2)
+                    n_gram_freq_dist_of_the_other_utt = generate_n_gram_freq_dist(other_side_utterance, n_gram_freq_dist_of_the_other_utt, 2)
 
+            result['statistics']['word_position'] = round(sum(list_of_turn_position_of_word) / len(list_of_turn_position_of_word), 2)
+            
+            result['statistics']['n_gram_freq_dist_of_utt_containg_keyword'] = change_tuple_dict_key_to_str_dict_key(n_gram_freq_dist_of_utt_containg_keyword.most_common(30))
+            result['statistics']['n_gram_freq_dist_of_the_other_utt'] = change_tuple_dict_key_to_str_dict_key(n_gram_freq_dist_of_the_other_utt.most_common(30))
 
-    print(result['statistics'])
+    # print(result['statistics'])
     result['statistics']['total'] = sum(author_counter.values())
     result['statistics']['author_type'] = len(author_counter.keys())
+    # print(len(list_of_turn_position_of_word))
+    # print(len(list_of_sentence_position_of_word))
+    result['statistics']['turn_position_distribution'] = calculate_word_position_distribution(list_of_turn_position_of_word)
+    result['statistics']['sentence_position_distribution'] = calculate_word_position_distribution(list_of_sentence_position_of_word)
+
+
+
 
     if result['statistics']['total'] == 0:
 
@@ -86,34 +160,7 @@ def query_word_from_side(word, which_side, comment_type=None):
     
     return jsonify(result)
 
-def find_substring_indice_in_a_string(string, substring):
 
-    l = list()
-
-    list_of_words_without_keyword = string.split(substring)
-
-    for _i, _w in enumerate(list_of_words_without_keyword):
-
-        l += list(_w)
-        
-        if _i == len(list_of_words_without_keyword) - 1:
-            continue
-        
-        else:
-            l.append(substring)
-
-
-
-    len_of_string = len(l)
-
-    r = list()
-
-    for i, w in enumerate(l):
-        if w == substring:
-            r.append((i / len_of_string) * (len_of_string / (len_of_string - 1)))
-
-    print(r)
-    return round(sum(r) / len(r), 2)
 
 #we define the route /
 @app.route('/')
